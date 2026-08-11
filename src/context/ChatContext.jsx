@@ -222,8 +222,8 @@ const ChatProvider = ({ children }) => {
     [socket, messagesByConversation, loadMessages]
   );
 
-  const sendMessage = useCallback(async (conversationId, content) => {
-    await sendMessageRequest(conversationId, content);
+  const sendMessage = useCallback(async (conversationId, content, images = []) => {
+    await sendMessageRequest(conversationId, content, { images });
   }, []);
 
   const editMessage = useCallback(async (messageId, content) => {

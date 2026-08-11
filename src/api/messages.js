@@ -7,7 +7,25 @@ const getMessages = async (conversationId, { cursor, limit } = {}) => {
   return response.data.data;
 };
 
-const sendMessage = async (conversationId, content, type = 'text') => {
+const sendMessage = async (conversationId, content, { type = 'text', images = [] } = {}) => {
+  if (images.length > 0) {
+    const formData = new FormData();
+    formData.append('content', content || '');
+    images.forEach((image) => formData.append('images', image));
+
+    // apiClient sets a default 'Content-Type: application/json' header. If we
+    // don't clear it here, axios sees JSON already declared and serializes
+    // the FormData into a JSON string instead of sending it as multipart —
+    // so the server never sees the files. Setting it to `undefined` lets
+    // axios (and the browser) detect the FormData body and set the correct
+    // multipart boundary themselves; manually forcing 'multipart/form-data'
+    // would omit that boundary and break parsing on the server just the same.
+    const response = await apiClient.post(`/api/messages/conversation/${conversationId}`, formData, {
+      headers: { 'Content-Type': undefined },
+    });
+    return response.data.data;
+  }
+
   const response = await apiClient.post(`/api/messages/conversation/${conversationId}`, { content, type });
   return response.data.data;
 };

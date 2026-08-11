@@ -3,6 +3,7 @@ import { Icon } from '@iconify/react';
 import toast from 'react-hot-toast';
 import { useAuth } from '../../context/AuthContext';
 import { useChat } from '../../context/ChatContext';
+import MessageAttachments from './MessageAttachments';
 
 const QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '😢'];
 
@@ -17,6 +18,8 @@ const MessageBubble = ({ message, showSenderName }) => {
   const [showReactionPicker, setShowReactionPicker] = useState(false);
 
   const isOwn = String(message.sender?._id || message.sender) === String(user?.id);
+  const hasAttachments = Boolean(message.attachments?.length);
+  const hasText = Boolean(message.content?.trim());
 
   if (message.isDeleted) {
     return (
@@ -77,7 +80,7 @@ const MessageBubble = ({ message, showSenderName }) => {
         ) : null}
 
         <div
-          className={`max-w-xs rounded-2xl px-4 py-2 text-sm sm:max-w-sm ${
+          className={`max-w-xs rounded-2xl px-4 py-2 text-sm sm:max-w-sm ${hasAttachments ? 'space-y-2' : ''} ${
             isOwn ? 'bg-gradient-to-r from-cyan-500 to-indigo-500 text-slate-950' : 'bg-white/10 text-slate-100'
           }`}
         >
@@ -99,7 +102,10 @@ const MessageBubble = ({ message, showSenderName }) => {
               </div>
             </div>
           ) : (
-            <p className="whitespace-pre-wrap break-words">{message.content}</p>
+            <>
+              {hasAttachments ? <MessageAttachments attachments={message.attachments} /> : null}
+              {hasText ? <p className="whitespace-pre-wrap break-words">{message.content}</p> : null}
+            </>
           )}
         </div>
 

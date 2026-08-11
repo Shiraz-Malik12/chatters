@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import auth from '../middleware/auth.middleware.js';
+import handleImageUpload from '../middleware/uploadMiddleware.js';
 import {
   createMessage,
   getConversationMessages,
@@ -15,7 +16,9 @@ const router = Router();
 router.use(auth);
 
 router.get('/conversation/:id', getConversationMessages);
-router.post('/conversation/:id', createMessage);
+// handleImageUpload only engages for multipart/form-data bodies, so this
+// single endpoint keeps serving plain JSON text messages unchanged.
+router.post('/conversation/:id', handleImageUpload, createMessage);
 router.put('/conversation/:id/read', markConversationRead);
 router.put('/:id', updateMessage);
 router.delete('/:id', removeMessage);

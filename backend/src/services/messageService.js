@@ -5,6 +5,9 @@ import User from '../models/User.js';
 import '../models/Attachment.js';
 import ApiError from '../utils/ApiError.js';
 import { validateParticipant } from './conversationService.js';
+import { deleteAttachments, processAttachments } from './attachmentService.js';
+
+const ATTACHMENT_POPULATE_FIELDS = 'type url mimetype size width height originalName publicId';
 
 /**
  * Escapes regex special characters in user-provided search query.
@@ -69,31 +72,50 @@ const assertPrivateMessagingAllowed = async (conversation, senderId) => {
 };
 
 /**
- * Sends a message to a conversation.
+ * Sends a message to a conversation. Accepts either text, image attachments,
+ * or both — at least one of the two is required. Works identically for
+ * private and group conversations since both share this one code path.
  * @param {string} conversationId - Conversation id.
  * @param {string} senderId - Sender user id.
- * @param {string} content - Message content.
- * @param {'text'|'image'|'file'|'system'} [type='text'] - Message type.
+ * @param {string} content - Message text content (may be empty if files are attached).
+ * @param {'text'|'image'|'file'|'system'} [type='text'] - Requested message type; forced to 'image' when files are attached.
+ * @param {Express.Multer.File[]} [files=[]] - Image files parsed by multer's memoryStorage, if any.
  * @returns {Promise<import('../models/Message.js').default>}
  */
-export const sendMessage = async (conversationId, senderId, content, type = 'text') => {
+export const sendMessage = async (conversationId, senderId, content, type = 'text', files = []) => {
   const conversation = await validateParticipant(conversationId, senderId);
   await assertPrivateMessagingAllowed(conversation, senderId);
 
-  const normalizedType = type || 'text';
   const normalizedContent = typeof content === 'string' ? content.trim() : '';
+  const hasFiles = Array.isArray(files) && files.length > 0;
 
-  if (normalizedType === 'text' && !normalizedContent) {
-    throw new ApiError(400, 'Text message content is required');
+  if (!normalizedContent && !hasFiles) {
+    throw new ApiError(400, 'Message must contain text or at least one image');
   }
 
-  const message = await Message.create({
-    conversationId: conversation._id,
-    sender: toObjectId(senderId, 'senderId'),
-    content: normalizedContent,
-    type: normalizedType,
-    readBy: [{ user: senderId, readAt: new Date() }],
-  });
+  // Images are validated, uploaded to Cloudinary, and persisted as Attachment
+  // docs before the Message is created — never after, and never before the
+  // membership check above, so an unauthorized caller can't trigger uploads.
+  const attachments = await processAttachments(files, senderId);
+  const normalizedType = hasFiles ? 'image' : type || 'text';
+
+  let message;
+
+  try {
+    message = await Message.create({
+      conversationId: conversation._id,
+      sender: toObjectId(senderId, 'senderId'),
+      content: normalizedContent,
+      type: normalizedType,
+      attachments: attachments.map((attachment) => attachment._id),
+      readBy: [{ user: senderId, readAt: new Date() }],
+    });
+  } catch (error) {
+    // Message failed to save after attachments were already uploaded — clean
+    // up so nothing is orphaned in Cloudinary/MongoDB, then rethrow as-is.
+    await deleteAttachments(attachments);
+    throw error;
+  }
 
   conversation.lastMessage = message._id;
   conversation.participants = conversation.participants.map((participant) => {
@@ -111,7 +133,7 @@ export const sendMessage = async (conversationId, senderId, content, type = 'tex
 
   return Message.findById(message._id)
     .populate({ path: 'sender', select: 'name avatar' })
-    .populate({ path: 'attachments', select: 'filename originalName mimetype size url' })
+    .populate({ path: 'attachments', select: ATTACHMENT_POPULATE_FIELDS })
     .populate({ path: 'replyTo', select: 'sender content type createdAt isDeleted' });
 };
 
@@ -146,7 +168,7 @@ export const getMessages = async (conversationId, cursor, limit = 20, userId) =>
     .sort({ createdAt: -1 })
     .limit(safeLimit + 1)
     .populate({ path: 'sender', select: 'name avatar' })
-    .populate({ path: 'attachments', select: 'filename originalName mimetype size url' })
+    .populate({ path: 'attachments', select: ATTACHMENT_POPULATE_FIELDS })
     .populate({ path: 'replyTo', select: 'sender content type createdAt isDeleted' });
 
   const hasNext = docs.length > safeLimit;
@@ -202,7 +224,7 @@ export const editMessage = async (messageId, userId, newContent) => {
 
   return Message.findById(message._id)
     .populate({ path: 'sender', select: 'name avatar' })
-    .populate({ path: 'attachments', select: 'filename originalName mimetype size url' });
+    .populate({ path: 'attachments', select: ATTACHMENT_POPULATE_FIELDS });
 };
 
 /**
@@ -243,7 +265,7 @@ export const deleteMessage = async (messageId, userId, deleteFor) => {
 
   return Message.findById(message._id)
     .populate({ path: 'sender', select: 'name avatar' })
-    .populate({ path: 'attachments', select: 'filename originalName mimetype size url' });
+    .populate({ path: 'attachments', select: ATTACHMENT_POPULATE_FIELDS });
 };
 
 /**
@@ -298,7 +320,7 @@ export const addReaction = async (messageId, userId, emoji) => {
 
   return Message.findById(message._id)
     .populate({ path: 'sender', select: 'name avatar' })
-    .populate({ path: 'attachments', select: 'filename originalName mimetype size url' });
+    .populate({ path: 'attachments', select: ATTACHMENT_POPULATE_FIELDS });
 };
 
 /**
@@ -373,5 +395,5 @@ export const searchMessages = async (conversationId, query, userId) => {
     .sort({ createdAt: -1 })
     .limit(50)
     .populate({ path: 'sender', select: 'name avatar' })
-    .populate({ path: 'attachments', select: 'filename originalName mimetype size url' });
+    .populate({ path: 'attachments', select: ATTACHMENT_POPULATE_FIELDS });
 };

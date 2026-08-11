@@ -20,10 +20,19 @@ import {
  */
 export const createMessage = asyncHandler(async (req, res) => {
   const { content = '', type = 'text' } = req.body;
-  const message = await sendMessage(req.params.id, String(req.user.id), content, type);
+  const files = req.files || [];
+  const message = await sendMessage(req.params.id, String(req.user.id), content, type, files);
 
   const io = req.app.get('io');
-  if (io) emitToConversation(io, req.params.id, 'message:new', message);
+  if (io) {
+    try {
+      emitToConversation(io, req.params.id, 'message:new', message);
+    } catch (error) {
+      // MongoDB is the source of truth — the message is already saved, so a
+      // broadcast failure must not fail the request or delete the message.
+      console.error('[messages] failed to emit message:new:', error.message);
+    }
+  }
 
   res.status(201).json(ApiResponse.success(message, 'Message sent successfully'));
 });
