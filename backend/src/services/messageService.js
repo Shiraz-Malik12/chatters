@@ -208,19 +208,21 @@ export const getMessages = async (conversationId, cursor, limit = 20, userId) =>
 
 /**
  * Edits a message authored by the requesting user. Text content can be
- * changed as before; if `files` are provided, the message's *image*
- * attachments are replaced by them (upload-new-then-delete-old, never
- * partial — see the full-replace note in MessageComposer/MessageBubble).
- * Video attachments are not editable yet — if the message also has videos,
- * they are always left completely untouched, whether or not its images are
- * being replaced.
+ * changed as before. If `files` (new images) and/or `videoRefs` (new,
+ * already-uploaded-to-Cloudinary videos — see videoUploadService) are
+ * provided, that attachment *kind* is replaced (upload/verify-new-then-
+ * delete-old, never partial — see the full-replace note in
+ * MessageComposer/MessageBubble). Images and videos are replaced
+ * independently: passing new videos alone leaves the message's images
+ * completely untouched, and vice versa.
  * @param {string} messageId - Message id.
  * @param {string} userId - Requesting user id.
  * @param {string} newContent - New text content.
  * @param {Express.Multer.File[]} [files=[]] - Replacement image files, if the images are being changed.
+ * @param {{publicId: string}[]} [videoRefs=[]] - Replacement, already-uploaded video refs, if the videos are being changed.
  * @returns {Promise<import('../models/Message.js').default>}
  */
-export const editMessage = async (messageId, userId, newContent, files = []) => {
+export const editMessage = async (messageId, userId, newContent, files = [], videoRefs = []) => {
   const message = await Message.findById(messageId);
 
   if (!message) {
@@ -239,18 +241,18 @@ export const editMessage = async (messageId, userId, newContent, files = []) => 
 
   const normalizedContent = typeof newContent === 'string' ? newContent.trim() : '';
   const hasNewImages = Array.isArray(files) && files.length > 0;
+  const hasNewVideos = Array.isArray(videoRefs) && videoRefs.length > 0;
 
-  // Editing only ever replaces *images* (see MessageBubble's edit UI) — any
-  // video attachments on this message must survive untouched either way.
-  // Split the existing set up front so a video-carrying message can still
-  // have its images swapped without its videos being collected as "old"
-  // attachments and deleted below.
+  // Images and videos are replaced independently — split the existing set up
+  // front so replacing one kind never disturbs the other. Whichever kind
+  // isn't being replaced in this request is carried forward untouched below.
   const existingAttachments =
     message.attachments.length > 0 ? await Attachment.find({ _id: { $in: message.attachments } }) : [];
   const existingImageAttachments = existingAttachments.filter((attachment) => attachment.type !== 'video');
-  const preservedAttachments = existingAttachments.filter((attachment) => attachment.type === 'video');
+  const existingVideoAttachments = existingAttachments.filter((attachment) => attachment.type === 'video');
 
-  const willHaveAttachments = hasNewImages || existingAttachments.length > 0;
+  const willHaveAttachments =
+    hasNewImages || existingImageAttachments.length > 0 || hasNewVideos || existingVideoAttachments.length > 0;
 
   if (!normalizedContent && !willHaveAttachments) {
     throw new ApiError(400, 'Message must contain text or at least one attachment');
@@ -258,17 +260,30 @@ export const editMessage = async (messageId, userId, newContent, files = []) => 
 
   const contentChanged = normalizedContent !== message.content;
 
-  if (!contentChanged && !hasNewImages) {
+  if (!contentChanged && !hasNewImages && !hasNewVideos) {
     // Nothing actually changed — return as-is instead of bumping isEdited.
     return Message.findById(message._id)
       .populate({ path: 'sender', select: 'name avatar' })
       .populate({ path: 'attachments', select: ATTACHMENT_POPULATE_FIELDS });
   }
 
-  // Upload replacement images (if any) *before* touching the message, so a
-  // failed upload leaves the existing message and its current images
+  // Upload/verify replacements *before* touching the message, so a failure
+  // in either step leaves the existing message and its current attachments
   // completely untouched.
   const newImageAttachments = hasNewImages ? await processAttachments(files, userId) : [];
+
+  let newVideoAttachments = [];
+
+  try {
+    newVideoAttachments = hasNewVideos
+      ? await processVideoAttachments(videoRefs, userId, String(message.conversationId))
+      : [];
+  } catch (error) {
+    // Roll back any images already uploaded in this same request before
+    // rethrowing — same all-or-nothing guarantee sendMessage gives.
+    await deleteAttachments(newImageAttachments);
+    throw error;
+  }
 
   if (contentChanged) {
     message.editHistory.push({
@@ -278,15 +293,18 @@ export const editMessage = async (messageId, userId, newContent, files = []) => 
     message.content = normalizedContent;
   }
 
-  if (hasNewImages) {
-    // Preserved (video) attachments come first, followed by the replacement
-    // images — the old *image* attachments are dropped from the message
-    // here and physically deleted below, once the save succeeds.
+  const finalImageAttachments = hasNewImages ? newImageAttachments : existingImageAttachments;
+  const finalVideoAttachments = hasNewVideos ? newVideoAttachments : existingVideoAttachments;
+
+  if (hasNewImages || hasNewVideos) {
+    // The old attachments of whichever kind changed are dropped from the
+    // message here and physically deleted below, once the save succeeds.
     message.attachments = [
-      ...preservedAttachments.map((attachment) => attachment._id),
-      ...newImageAttachments.map((attachment) => attachment._id),
+      ...finalVideoAttachments.map((attachment) => attachment._id),
+      ...finalImageAttachments.map((attachment) => attachment._id),
     ];
-    message.type = preservedAttachments.some((attachment) => attachment.type === 'video') ? message.type : 'image';
+    message.type =
+      finalVideoAttachments.length > 0 ? 'video' : finalImageAttachments.length > 0 ? 'image' : message.type;
   }
 
   message.isEdited = true;
@@ -294,18 +312,24 @@ export const editMessage = async (messageId, userId, newContent, files = []) => 
   try {
     await message.save();
   } catch (error) {
-    // The message never switched over, so roll back the freshly uploaded
-    // replacement images before rethrowing — nothing should point at them.
+    // The message never switched over, so roll back whatever was freshly
+    // uploaded/verified in this request before rethrowing — nothing should
+    // point at it.
     await deleteAttachments(newImageAttachments);
+    await deleteAttachments(newVideoAttachments);
     throw error;
   }
 
-  // Only delete the old *images* once the message safely points at the new
-  // ones — otherwise a race could leave a message referencing nothing. The
-  // preserved video attachments were never touched, so there's nothing to
-  // clean up for them.
+  // Only delete the old attachments of a kind once the message safely points
+  // at its replacements — otherwise a race could leave a message referencing
+  // nothing. Whichever kind wasn't replaced was never touched, so there's
+  // nothing to clean up for it.
   if (hasNewImages) {
     await deleteAttachments(existingImageAttachments);
+  }
+
+  if (hasNewVideos) {
+    await deleteAttachments(existingVideoAttachments);
   }
 
   return Message.findById(message._id)

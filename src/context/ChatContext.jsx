@@ -241,8 +241,8 @@ const ChatProvider = ({ children }) => {
     await sendMessageRequest(conversationId, content, { images, videoAttachments });
   }, []);
 
-  const editMessage = useCallback(async (messageId, content, images = []) => {
-    await updateMessageRequest(messageId, content, { images });
+  const editMessage = useCallback(async (messageId, content, images = [], videoAttachments = []) => {
+    await updateMessageRequest(messageId, content, { images, videoAttachments });
   }, []);
 
   const removeMessage = useCallback(async (messageId, deleteFor = 'me') => {

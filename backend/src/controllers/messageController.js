@@ -97,7 +97,8 @@ export const updateMessage = asyncHandler(async (req, res) => {
   }
 
   const files = req.files || [];
-  const message = await editMessage(req.params.id, String(req.user.id), content, files);
+  const videoRefs = parseVideoAttachments(req.body.videoAttachments);
+  const message = await editMessage(req.params.id, String(req.user.id), content, files, videoRefs);
 
   const io = req.app.get('io');
   if (io) emitToConversation(io, String(message.conversationId), 'message:updated', message);

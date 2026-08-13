@@ -428,6 +428,70 @@ test('editing a message to replace its images leaves a video attachment on the s
   assert.ok(await Attachment.findById(videoAttachmentId), 'video attachment must still exist in the database');
 });
 
+test('editing a message to replace its video leaves an image attachment on the same message untouched', async () => {
+  mockVerifiedVideoResource();
+  mockDeleteImage();
+  const [alice, bob] = await Promise.all([createUser(), createUser()]);
+  const conversation = await createPrivateConversation(alice, bob);
+  const oldAuth = (await requestSignature(alice, conversation._id)).body.data;
+
+  const sendResponse = await asUser(alice)
+    .post(`/api/messages/conversation/${conversation._id}`)
+    .field('content', 'mixed message')
+    .field('videoAttachments', JSON.stringify([{ publicId: oldAuth.publicId }]))
+    .attach('images', TINY_PNG, { filename: 'keep.png', contentType: 'image/png' });
+
+  const messageId = sendResponse.body.data._id;
+  const oldVideoAttachmentId = sendResponse.body.data.attachments.find((a) => a.type === 'video')._id;
+  const imageAttachmentId = sendResponse.body.data.attachments.find((a) => a.type === 'image')._id;
+
+  const newAuth = (await requestSignature(alice, conversation._id)).body.data;
+
+  const editResponse = await asUser(alice)
+    .put(`/api/messages/${messageId}`)
+    .send({ content: 'mixed message, edited', videoAttachments: [{ publicId: newAuth.publicId }] });
+
+  assert.equal(editResponse.statusCode, 200);
+  assert.equal(editResponse.body.data.attachments.length, 2);
+  const editedTypes = editResponse.body.data.attachments.map((a) => a.type).sort();
+  assert.deepEqual(editedTypes, ['image', 'video']);
+
+  // The image attachment itself (same _id) survived the edit completely.
+  assert.ok(editResponse.body.data.attachments.some((a) => String(a._id) === String(imageAttachmentId)));
+  // The new video is a different, verified attachment; the old one was replaced and cleaned up.
+  const newVideoAttachment = editResponse.body.data.attachments.find((a) => a.type === 'video');
+  assert.notEqual(String(newVideoAttachment._id), String(oldVideoAttachmentId));
+  assert.equal(await Attachment.findById(oldVideoAttachmentId), null);
+  assert.ok(await Attachment.findById(imageAttachmentId), 'image attachment must still exist in the database');
+});
+
+test('editing a video-only message with a new video (no images) replaces it via plain JSON', async () => {
+  mockVerifiedVideoResource();
+  mockDeleteImage();
+  const [alice, bob] = await Promise.all([createUser(), createUser()]);
+  const conversation = await createPrivateConversation(alice, bob);
+  const oldAuth = (await requestSignature(alice, conversation._id)).body.data;
+
+  const sendResponse = await asUser(alice)
+    .post(`/api/messages/conversation/${conversation._id}`)
+    .send({ content: '', videoAttachments: [{ publicId: oldAuth.publicId }] });
+
+  const messageId = sendResponse.body.data._id;
+  const oldVideoAttachmentId = sendResponse.body.data.attachments[0]._id;
+
+  const newAuth = (await requestSignature(alice, conversation._id)).body.data;
+
+  const editResponse = await asUser(alice)
+    .put(`/api/messages/${messageId}`)
+    .send({ content: '', videoAttachments: [{ publicId: newAuth.publicId }] });
+
+  assert.equal(editResponse.statusCode, 200);
+  assert.equal(editResponse.body.data.attachments.length, 1);
+  assert.equal(editResponse.body.data.attachments[0].type, 'video');
+  assert.notEqual(String(editResponse.body.data.attachments[0]._id), String(oldVideoAttachmentId));
+  assert.equal(await Attachment.findById(oldVideoAttachmentId), null, 'old video attachment should be cleaned up');
+});
+
 test('an empty message (no text, no images, no videos) is still rejected', async () => {
   const [alice, bob] = await Promise.all([createUser(), createUser()]);
   const conversation = await createPrivateConversation(alice, bob);

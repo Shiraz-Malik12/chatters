@@ -44,17 +44,28 @@ const sendMessage = async (conversationId, content, { type = 'text', images = []
   return response.data.data;
 };
 
-const updateMessage = async (messageId, content, { images = [] } = {}) => {
+const updateMessage = async (messageId, content, { images = [], videoAttachments = [] } = {}) => {
+  // Same FormData + cleared-Content-Type trick as sendMessage — see the
+  // comment there for why the header override is necessary. As with
+  // sendMessage, video bytes are already uploaded directly to Cloudinary by
+  // this point, so videoAttachments is just an array of tiny {publicId}
+  // refs that rides along either as a form field or plain JSON.
   if (images.length > 0) {
-    // Same FormData + cleared-Content-Type trick as sendMessage — see the
-    // comment there for why the header override is necessary.
     const formData = new FormData();
     formData.append('content', content || '');
     images.forEach((image) => formData.append('images', image));
+    if (videoAttachments.length > 0) {
+      formData.append('videoAttachments', JSON.stringify(videoAttachments));
+    }
 
     const response = await apiClient.put(`/api/messages/${messageId}`, formData, {
       headers: { 'Content-Type': undefined },
     });
+    return response.data.data;
+  }
+
+  if (videoAttachments.length > 0) {
+    const response = await apiClient.put(`/api/messages/${messageId}`, { content, videoAttachments });
     return response.data.data;
   }
 
