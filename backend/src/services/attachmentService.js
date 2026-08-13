@@ -39,15 +39,19 @@ const validateFiles = async (files) => {
 /**
  * Best-effort deletion of Cloudinary assets. Never throws — only logs — so
  * it's safe to call from inside a catch block without masking the original
- * error that triggered the cleanup.
- * @param {{publicId: string}[]} assets - Assets to remove from Cloudinary.
+ * error that triggered the cleanup. `resourceType` defaults to 'image' so
+ * every pre-existing call site (all image cleanup, written before video
+ * support existed) is unaffected; video cleanup call sites pass it explicitly.
+ * Exported so videoUploadService.js can reuse the same cleanup logic instead
+ * of duplicating a "delete and swallow errors" loop.
+ * @param {{publicId: string, resourceType?: 'image'|'video'}[]} assets - Assets to remove from Cloudinary.
  * @returns {Promise<void>}
  */
-const cleanupCloudinaryAssets = async (assets) => {
+export const cleanupCloudinaryAssets = async (assets) => {
   await Promise.all(
     assets.map(async (asset) => {
       try {
-        await cloudinaryService.deleteImage(asset.publicId);
+        await cloudinaryService.deleteImage(asset.publicId, asset.resourceType || 'image');
       } catch (error) {
         console.error(`[attachments] failed to clean up orphaned Cloudinary asset ${asset.publicId}:`, error.message);
       }
@@ -92,6 +96,7 @@ const persistAttachments = async (uploads, uploaderId) => {
     return await Attachment.insertMany(
       uploads.map(({ file, result }) => ({
         type: 'image',
+        resourceType: 'image',
         // Server-generated Cloudinary public_id — never the user's own filename.
         filename: result.public_id,
         originalName: file.originalname || 'image',
@@ -121,7 +126,9 @@ const persistAttachments = async (uploads, uploaderId) => {
 export const deleteAttachments = async (attachments) => {
   if (!attachments || attachments.length === 0) return;
 
-  await cleanupCloudinaryAssets(attachments.map((attachment) => ({ publicId: attachment.publicId })));
+  await cleanupCloudinaryAssets(
+    attachments.map((attachment) => ({ publicId: attachment.publicId, resourceType: attachment.resourceType }))
+  );
 
   try {
     await Attachment.deleteMany({ _id: { $in: attachments.map((attachment) => attachment._id) } });

@@ -13,6 +13,7 @@ import {
   deleteMessage as deleteMessageRequest,
   getMessages,
   markConversationRead,
+  reactToAttachment as reactToAttachmentRequest,
   reactToMessage as reactToMessageRequest,
   sendMessage as sendMessageRequest,
   updateMessage as updateMessageRequest,
@@ -108,12 +109,26 @@ const ChatProvider = ({ children }) => {
     };
 
     const handleMessageChanged = (message) => {
+      // "Delete for me" (see messageController.removeMessage) adds the
+      // current user's id to message.deletedFor rather than changing the
+      // message's content — everyone else's copy is untouched. If it's
+      // *our* id in there, the message needs to disappear from our own
+      // view entirely (mirrors how getMessages already excludes it from a
+      // fresh page load), not just get re-upserted with nothing visibly
+      // different, which is what made "delete for me" look like a no-op.
+      const deletedForMe = message.deletedFor?.some((id) => String(id) === String(user?.id));
+
       setMessagesByConversation((current) => {
         const existing = current[message.conversationId];
         if (!existing) return current;
         return {
           ...current,
-          [message.conversationId]: { ...existing, items: upsertMessage(existing.items, message) },
+          [message.conversationId]: {
+            ...existing,
+            items: deletedForMe
+              ? existing.items.filter((item) => item._id !== message._id)
+              : upsertMessage(existing.items, message),
+          },
         };
       });
     };
@@ -176,7 +191,7 @@ const ChatProvider = ({ children }) => {
       socket.off('presence:update', handlePresenceUpdate);
       socket.off('typing:update', handleTypingUpdate);
     };
-  }, [socket, patchConversationPreview, clearTyping]);
+  }, [socket, patchConversationPreview, clearTyping, user?.id]);
 
   const loadMessages = useCallback(async (conversationId) => {
     const page = await getMessages(conversationId);
@@ -222,12 +237,12 @@ const ChatProvider = ({ children }) => {
     [socket, messagesByConversation, loadMessages]
   );
 
-  const sendMessage = useCallback(async (conversationId, content, images = []) => {
-    await sendMessageRequest(conversationId, content, { images });
+  const sendMessage = useCallback(async (conversationId, content, images = [], videoAttachments = []) => {
+    await sendMessageRequest(conversationId, content, { images, videoAttachments });
   }, []);
 
-  const editMessage = useCallback(async (messageId, content) => {
-    await updateMessageRequest(messageId, content);
+  const editMessage = useCallback(async (messageId, content, images = []) => {
+    await updateMessageRequest(messageId, content, { images });
   }, []);
 
   const removeMessage = useCallback(async (messageId, deleteFor = 'me') => {
@@ -236,6 +251,10 @@ const ChatProvider = ({ children }) => {
 
   const reactToMessage = useCallback(async (messageId, emoji) => {
     await reactToMessageRequest(messageId, emoji);
+  }, []);
+
+  const reactToAttachment = useCallback(async (attachmentId, emoji) => {
+    await reactToAttachmentRequest(attachmentId, emoji);
   }, []);
 
   const startTyping = useCallback(
@@ -298,6 +317,7 @@ const ChatProvider = ({ children }) => {
     editMessage,
     removeMessage,
     reactToMessage,
+    reactToAttachment,
     startTyping,
     stopTyping,
     startPrivateConversation,

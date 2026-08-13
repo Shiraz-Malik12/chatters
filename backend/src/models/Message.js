@@ -1,20 +1,5 @@
 import mongoose from 'mongoose';
-
-const reactionSchema = new mongoose.Schema(
-  {
-    emoji: {
-      type: String,
-      required: true,
-      trim: true,
-    },
-    users: {
-      type: [mongoose.Schema.Types.ObjectId],
-      ref: 'User',
-      default: [],
-    },
-  },
-  { _id: false }
-);
+import reactionSchema from './reactionSchema.js';
 
 const readBySchema = new mongoose.Schema(
   {
@@ -65,7 +50,7 @@ const messageSchema = new mongoose.Schema(
     },
     type: {
       type: String,
-      enum: ['text', 'image', 'file', 'system'],
+      enum: ['text', 'image', 'video', 'file', 'system'],
       default: 'text',
     },
     attachments: {

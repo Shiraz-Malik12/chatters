@@ -5,6 +5,7 @@ import {
   createMessage,
   getConversationMessages,
   markConversationRead,
+  reactToAttachment,
   reactToMessage,
   removeMessage,
   searchConversationMessages,
@@ -20,9 +21,12 @@ router.get('/conversation/:id', getConversationMessages);
 // single endpoint keeps serving plain JSON text messages unchanged.
 router.post('/conversation/:id', handleImageUpload, createMessage);
 router.put('/conversation/:id/read', markConversationRead);
-router.put('/:id', updateMessage);
+// Same trick as the send route: handleImageUpload is a no-op for plain JSON
+// edits, and only parses files when the edit swaps out the images.
+router.put('/:id', handleImageUpload, updateMessage);
 router.delete('/:id', removeMessage);
 router.post('/:id/react', reactToMessage);
+router.post('/attachments/:attachmentId/react', reactToAttachment);
 router.get('/search', searchConversationMessages);
 
 export default router;

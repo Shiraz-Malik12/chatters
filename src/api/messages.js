@@ -7,11 +7,18 @@ const getMessages = async (conversationId, { cursor, limit } = {}) => {
   return response.data.data;
 };
 
-const sendMessage = async (conversationId, content, { type = 'text', images = [] } = {}) => {
+const sendMessage = async (conversationId, content, { type = 'text', images = [], videoAttachments = [] } = {}) => {
+  // Video bytes were already uploaded directly to Cloudinary (see
+  // api/media.js) — videoAttachments here is just an array of tiny
+  // {publicId} refs, small enough to always ride along as JSON even in a
+  // multipart request.
   if (images.length > 0) {
     const formData = new FormData();
     formData.append('content', content || '');
     images.forEach((image) => formData.append('images', image));
+    if (videoAttachments.length > 0) {
+      formData.append('videoAttachments', JSON.stringify(videoAttachments));
+    }
 
     // apiClient sets a default 'Content-Type: application/json' header. If we
     // don't clear it here, axios sees JSON already declared and serializes
@@ -26,11 +33,31 @@ const sendMessage = async (conversationId, content, { type = 'text', images = []
     return response.data.data;
   }
 
-  const response = await apiClient.post(`/api/messages/conversation/${conversationId}`, { content, type });
+  // No image files, so no multipart body is needed even if there are
+  // videos — a plain JSON request keeps the (already-verified) video refs
+  // just as well.
+  const response = await apiClient.post(`/api/messages/conversation/${conversationId}`, {
+    content,
+    type,
+    videoAttachments,
+  });
   return response.data.data;
 };
 
-const updateMessage = async (messageId, content) => {
+const updateMessage = async (messageId, content, { images = [] } = {}) => {
+  if (images.length > 0) {
+    // Same FormData + cleared-Content-Type trick as sendMessage — see the
+    // comment there for why the header override is necessary.
+    const formData = new FormData();
+    formData.append('content', content || '');
+    images.forEach((image) => formData.append('images', image));
+
+    const response = await apiClient.put(`/api/messages/${messageId}`, formData, {
+      headers: { 'Content-Type': undefined },
+    });
+    return response.data.data;
+  }
+
   const response = await apiClient.put(`/api/messages/${messageId}`, { content });
   return response.data.data;
 };
@@ -42,6 +69,11 @@ const deleteMessage = async (messageId, deleteFor = 'me') => {
 
 const reactToMessage = async (messageId, emoji) => {
   const response = await apiClient.post(`/api/messages/${messageId}/react`, { emoji });
+  return response.data.data;
+};
+
+const reactToAttachment = async (attachmentId, emoji) => {
+  const response = await apiClient.post(`/api/messages/attachments/${attachmentId}/react`, { emoji });
   return response.data.data;
 };
 
@@ -59,6 +91,7 @@ export {
   deleteMessage,
   getMessages,
   markConversationRead,
+  reactToAttachment,
   reactToMessage,
   searchMessages,
   sendMessage,
