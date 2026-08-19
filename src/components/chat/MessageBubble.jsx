@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 import { useAuth } from '../../context/AuthContext';
 import { useChat } from '../../context/ChatContext';
 import { QUICK_REACTIONS } from '../../utils/reactions';
+import { getReplyPreview } from '../../utils/messages';
 import { requestVideoUploadSignature, uploadVideoToCloudinary } from '../../api/media';
 import {
   ALLOWED_ATTACHMENT_MIME_TYPES,
@@ -19,7 +20,7 @@ import MessageAttachments from './MessageAttachments';
 
 const formatTime = (isoDate) => new Date(isoDate).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-const MessageBubble = ({ message, showSenderName }) => {
+const MessageBubble = ({ message, showSenderName, onReply }) => {
   const { user } = useAuth();
   const { editMessage, removeMessage, reactToMessage } = useChat();
   const [isEditing, setIsEditing] = useState(false);
@@ -46,6 +47,9 @@ const MessageBubble = ({ message, showSenderName }) => {
   const hasAttachments = attachments.length > 0;
   const hasText = Boolean(message.content?.trim());
   const busy = savingEdit || uploadingVideos;
+  const replyPreview = message.replyTo ? getReplyPreview(message.replyTo) : null;
+  const replySenderId = String(message.replyTo?.sender?._id || message.replyTo?.sender || '');
+  const replySenderName = replySenderId === String(user?.id) ? 'You' : message.replyTo?.sender?.name || 'Unknown';
 
   const editPreviews = useMemo(
     () => (editImages || []).map((file) => ({ file, url: URL.createObjectURL(file) })),
@@ -67,7 +71,10 @@ const MessageBubble = ({ message, showSenderName }) => {
 
   if (message.isDeleted) {
     return (
-      <div className={`flex ${isOwn ? 'justify-end' : 'justify-start'}`}>
+      // Keeps the same DOM id a normal bubble would have, so a reply quote
+      // pointing at this (now-deleted) message can still scroll to it — see
+      // handleJumpToReply below.
+      <div id={`message-${message._id}`} className={`flex ${isOwn ? 'justify-end' : 'justify-start'}`}>
         <p className="max-w-xs rounded-2xl border border-white/10 px-4 py-2 text-xs italic text-slate-500">
           This message was deleted
         </p>
@@ -221,8 +228,35 @@ const MessageBubble = ({ message, showSenderName }) => {
     }
   };
 
+  /**
+   * Scrolls the original message into view when the quoted block is clicked.
+   * Every bubble carries `id={message-<id>}` (see the root element below and
+   * the isDeleted early return above), so this is a plain DOM lookup rather
+   * than something that needs to be threaded through ChatWindow/context —
+   * the target is just another bubble already rendered in the same scroll
+   * container. If it isn't currently loaded (e.g. it's further back than
+   * what's been paginated in), there's nothing to scroll to yet, so this
+   * just tells the user to scroll up instead of failing silently.
+   */
+  const handleJumpToReply = () => {
+    if (!message.replyTo) return;
+
+    const target = document.getElementById(`message-${message.replyTo._id}`);
+
+    if (!target) {
+      toast('Scroll up to load the original message', { icon: 'ℹ️' });
+      return;
+    }
+
+    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    target.classList.add('ring-2', 'ring-cyan-400', 'ring-offset-2', 'ring-offset-slate-950');
+    setTimeout(() => {
+      target.classList.remove('ring-2', 'ring-cyan-400', 'ring-offset-2', 'ring-offset-slate-950');
+    }, 1500);
+  };
+
   return (
-    <div className={`group flex flex-col ${isOwn ? 'items-end' : 'items-start'}`}>
+    <div id={`message-${message._id}`} className={`group flex flex-col ${isOwn ? 'items-end' : 'items-start'}`}>
       {showSenderName && !isOwn ? (
         <span className="mb-1 px-1 text-xs font-medium text-slate-400">{message.sender?.name}</span>
       ) : null}
@@ -244,6 +278,29 @@ const MessageBubble = ({ message, showSenderName }) => {
             isOwn ? 'bg-gradient-to-r from-cyan-500 to-indigo-500 text-slate-950' : 'bg-white/10 text-slate-100'
           }`}
         >
+          {replyPreview ? (
+            // The quoted original — rendered above the reply's own content in
+            // both edit and normal view, so context never disappears just
+            // because the user opened the editor. Border/background use a
+            // translucent overlay rather than fixed colors so it reads on
+            // both the gradient (own) and bg-white/10 (other) bubble tones.
+            // It's a <button>, not a <div>, so clicking it jumps to (scrolls
+            // to + briefly highlights) the original message — see
+            // handleJumpToReply.
+            <button
+              type="button"
+              onClick={handleJumpToReply}
+              className={`mb-1.5 block w-full rounded-lg border-l-2 px-2 py-1 text-left text-xs transition-colors duration-150 ${
+                isOwn
+                  ? 'border-slate-950/50 bg-black/10 text-slate-900/80 hover:bg-black/20'
+                  : 'border-cyan-400/60 bg-black/20 text-slate-300 hover:bg-black/30'
+              }`}
+            >
+              <p className="font-medium">{replySenderName}</p>
+              <p className={`truncate ${replyPreview.isDeleted ? 'italic opacity-70' : ''}`}>{replyPreview.text}</p>
+            </button>
+          ) : null}
+
           {isEditing ? (
             <div className="space-y-2">
               {editImages && editImages.length > 0 ? (
@@ -398,7 +455,10 @@ const MessageBubble = ({ message, showSenderName }) => {
           )}
         </div>
 
-        <span className="flex opacity-0 transition-opacity duration-150 ease-out pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto">
+        <span className="flex items-center gap-1 opacity-0 transition-opacity duration-150 ease-out pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto">
+          <button type="button" onClick={onReply} aria-label="Reply" className="text-slate-500 transition-colors duration-150 hover:text-slate-200">
+            <Icon icon="mdi:reply-outline" width={16} />
+          </button>
           <button type="button" onClick={() => setShowReactionPicker((current) => !current)} className="text-slate-500 transition-colors duration-150 hover:text-slate-200">
             <Icon icon="mdi:emoticon-outline" width={16} />
           </button>

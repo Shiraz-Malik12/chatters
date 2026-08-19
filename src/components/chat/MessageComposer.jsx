@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '@iconify/react';
 import toast from 'react-hot-toast';
+import { useAuth } from '../../context/AuthContext';
 import { useChat } from '../../context/ChatContext';
 import { requestVideoUploadSignature, uploadVideoToCloudinary } from '../../api/media';
 import {
@@ -12,10 +13,12 @@ import {
   MAX_VIDEOS_PER_MESSAGE,
   MAX_VIDEO_SIZE_BYTES,
 } from '../../utils/attachments';
+import { getReplyPreview } from '../../utils/messages';
 
 const TYPING_STOP_DELAY_MS = 2000;
 
-const MessageComposer = ({ conversationId }) => {
+const MessageComposer = ({ conversationId, replyingTo, onCancelReply }) => {
+  const { user } = useAuth();
   const { sendMessage, startTyping, stopTyping } = useChat();
   const [content, setContent] = useState('');
   const [selectedImages, setSelectedImages] = useState([]);
@@ -30,6 +33,7 @@ const MessageComposer = ({ conversationId }) => {
   const [sending, setSending] = useState(false);
   const stopTypingTimeout = useRef(null);
   const fileInputRef = useRef(null);
+  const textareaRef = useRef(null);
 
   const imagePreviews = useMemo(
     () => selectedImages.map((file) => ({ file, url: URL.createObjectURL(file) })),
@@ -48,6 +52,14 @@ const MessageComposer = ({ conversationId }) => {
   useEffect(() => {
     return () => videoPreviews.forEach((preview) => URL.revokeObjectURL(preview.url));
   }, [videoPreviews]);
+
+  // Picking "Reply" on a message should drop the user straight into typing,
+  // same as most chat apps — no extra click into the textbox needed.
+  useEffect(() => {
+    if (replyingTo) {
+      textareaRef.current?.focus();
+    }
+  }, [replyingTo]);
 
   const busy = sending || uploadingVideos;
 
@@ -170,8 +182,9 @@ const MessageComposer = ({ conversationId }) => {
         setUploadingVideos(false);
       }
 
-      await sendMessage(conversationId, trimmed, imagesToSend, videoRefs);
+      await sendMessage(conversationId, trimmed, imagesToSend, videoRefs, replyingTo?._id || null);
       setSelectedVideos([]);
+      onCancelReply?.();
     } catch (error) {
       toast.error(error.response?.data?.error?.message || error.response?.data?.message || error.message || 'Could not send message');
       // Preserve what the user typed/picked so a failed send isn't lost —
@@ -195,8 +208,29 @@ const MessageComposer = ({ conversationId }) => {
   const attachmentLimitReached = selectedImages.length >= MAX_IMAGES_PER_MESSAGE && selectedVideos.length >= MAX_VIDEOS_PER_MESSAGE;
   const canSend = (content.trim() || selectedImages.length > 0 || selectedVideos.length > 0) && !busy;
 
+  const replyPreview = replyingTo ? getReplyPreview(replyingTo) : null;
+  const replyingToSelf = String(replyingTo?.sender?._id || replyingTo?.sender) === String(user?.id);
+  const replySenderName = replyingToSelf ? 'You' : replyingTo?.sender?.name || 'message';
+
   return (
     <form onSubmit={handleSubmit} className="border-t border-white/10 p-4">
+      {replyPreview ? (
+        <div className="mb-3 flex items-start justify-between gap-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2">
+          <div className="min-w-0 border-l-2 border-cyan-400/60 pl-2">
+            <p className="text-xs font-medium text-cyan-300">Replying to {replySenderName}</p>
+            <p className={`truncate text-xs text-slate-400 ${replyPreview.isDeleted ? 'italic' : ''}`}>{replyPreview.text}</p>
+          </div>
+          <button
+            type="button"
+            onClick={onCancelReply}
+            aria-label="Cancel reply"
+            className="shrink-0 text-slate-500 transition-colors duration-150 hover:text-slate-200"
+          >
+            <Icon icon="mdi:close" width={16} />
+          </button>
+        </div>
+      ) : null}
+
       {imagePreviews.length > 0 || videoPreviews.length > 0 ? (
         <div className="mb-3 flex flex-wrap gap-2">
           {imagePreviews.map((preview, index) => (
@@ -266,6 +300,7 @@ const MessageComposer = ({ conversationId }) => {
         </button>
 
         <textarea
+          ref={textareaRef}
           value={content}
           onChange={handleChange}
           onKeyDown={handleKeyDown}

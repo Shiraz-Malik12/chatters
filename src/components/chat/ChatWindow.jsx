@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Icon } from '@iconify/react';
 import { useAuth } from '../../context/AuthContext';
 import { useChat } from '../../context/ChatContext';
@@ -17,6 +17,16 @@ const ChatWindow = ({ conversation }) => {
   const { user } = useAuth();
   const { messagesByConversation, presenceByUserId, typingByConversation, loadMoreMessages, closeConversation } = useChat();
   const scrollRef = useRef(null);
+  // Owned here rather than inside MessageComposer/MessageBubble — this is
+  // their nearest shared parent, same reasoning as why messages/typing state
+  // already live in context instead of a leaf component. Reset whenever the
+  // open conversation changes so switching chats can't leave a stale quote
+  // pointing at a message from a different conversation.
+  const [replyingTo, setReplyingTo] = useState(null);
+
+  useEffect(() => {
+    setReplyingTo(null);
+  }, [conversation._id]);
 
   const conversationData = messagesByConversation[conversation._id];
   const messages = conversationData?.items || [];
@@ -69,7 +79,14 @@ const ChatWindow = ({ conversation }) => {
             conversation.type === 'group' &&
             (!previousMessage || String(previousMessage.sender?._id || previousMessage.sender) !== senderId);
 
-          return <MessageBubble key={message._id} message={message} showSenderName={showSenderName} />;
+          return (
+            <MessageBubble
+              key={message._id}
+              message={message}
+              showSenderName={showSenderName}
+              onReply={() => setReplyingTo(message)}
+            />
+          );
         })}
 
         {messages.length === 0 ? (
@@ -83,7 +100,11 @@ const ChatWindow = ({ conversation }) => {
         </p>
       ) : null}
 
-      <MessageComposer conversationId={conversation._id} />
+      <MessageComposer
+        conversationId={conversation._id}
+        replyingTo={replyingTo}
+        onCancelReply={() => setReplyingTo(null)}
+      />
     </div>
   );
 };

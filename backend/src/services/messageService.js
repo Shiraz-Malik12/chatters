@@ -12,6 +12,17 @@ import { processVideoAttachments } from './videoUploadService.js';
 const ATTACHMENT_POPULATE_FIELDS =
   'type resourceType url mimetype size width height duration thumbnailUrl format originalName publicId reactions';
 
+// Shared by every query that returns a message, so a reply quote always
+// carries enough of the original to render (who sent it, what it said/was,
+// whether it's since been deleted) without a second round trip. The nested
+// `sender` populate is what lets the UI show "Replying to <name>" — without
+// it `replyTo.sender` would just be a raw id.
+const REPLY_TO_POPULATE = {
+  path: 'replyTo',
+  select: 'sender content type createdAt isDeleted',
+  populate: { path: 'sender', select: 'name avatar' },
+};
+
 /**
  * Escapes regex special characters in user-provided search query.
  * @param {string} value - Raw search string.
@@ -75,6 +86,33 @@ const assertPrivateMessagingAllowed = async (conversation, senderId) => {
 };
 
 /**
+ * Validates a reply target: it must exist and belong to the same
+ * conversation as the message being sent. Checked before any upload work so
+ * a bad reference fails fast, same as the membership check above it. Replying
+ * to an already-deleted message is allowed on purpose (matches WhatsApp/
+ * Slack) — the quote just renders a "deleted" placeholder client-side.
+ * @param {string} conversationId - Conversation the new message belongs to.
+ * @param {string | null | undefined} replyToId - Raw `replyTo` id from the request, if any.
+ * @returns {Promise<mongoose.Types.ObjectId | null>}
+ */
+const resolveReplyTo = async (conversationId, replyToId) => {
+  if (!replyToId) return null;
+
+  const objectId = toObjectId(replyToId, 'replyTo');
+  const repliedMessage = await Message.findById(objectId).select('conversationId');
+
+  if (!repliedMessage) {
+    throw new ApiError(404, 'Message being replied to was not found');
+  }
+
+  if (String(repliedMessage.conversationId) !== String(conversationId)) {
+    throw new ApiError(400, 'Cannot reply to a message from another conversation');
+  }
+
+  return objectId;
+};
+
+/**
  * Sends a message to a conversation. Accepts text, image attachments, video
  * attachments, or any combination — at least one of the three is required.
  * Works identically for private and group conversations since both share
@@ -85,11 +123,21 @@ const assertPrivateMessagingAllowed = async (conversation, senderId) => {
  * @param {'text'|'image'|'video'|'file'|'system'} [type='text'] - Requested message type; overridden when files/videoRefs are present.
  * @param {Express.Multer.File[]} [files=[]] - Image files parsed by multer's memoryStorage, if any.
  * @param {{publicId: string}[]} [videoRefs=[]] - Already directly-uploaded video refs to verify and attach, if any.
+ * @param {string | null} [replyTo=null] - Id of the message being replied to, if any.
  * @returns {Promise<import('../models/Message.js').default>}
  */
-export const sendMessage = async (conversationId, senderId, content, type = 'text', files = [], videoRefs = []) => {
+export const sendMessage = async (
+  conversationId,
+  senderId,
+  content,
+  type = 'text',
+  files = [],
+  videoRefs = [],
+  replyTo = null
+) => {
   const conversation = await validateParticipant(conversationId, senderId);
   await assertPrivateMessagingAllowed(conversation, senderId);
+  const resolvedReplyTo = await resolveReplyTo(conversationId, replyTo);
 
   const normalizedContent = typeof content === 'string' ? content.trim() : '';
   const hasFiles = Array.isArray(files) && files.length > 0;
@@ -132,6 +180,7 @@ export const sendMessage = async (conversationId, senderId, content, type = 'tex
       content: normalizedContent,
       type: normalizedType,
       attachments: attachments.map((attachment) => attachment._id),
+      replyTo: resolvedReplyTo,
       readBy: [{ user: senderId, readAt: new Date() }],
     });
   } catch (error) {
@@ -158,7 +207,7 @@ export const sendMessage = async (conversationId, senderId, content, type = 'tex
   return Message.findById(message._id)
     .populate({ path: 'sender', select: 'name avatar' })
     .populate({ path: 'attachments', select: ATTACHMENT_POPULATE_FIELDS })
-    .populate({ path: 'replyTo', select: 'sender content type createdAt isDeleted' });
+    .populate(REPLY_TO_POPULATE);
 };
 
 /**
@@ -193,7 +242,7 @@ export const getMessages = async (conversationId, cursor, limit = 20, userId) =>
     .limit(safeLimit + 1)
     .populate({ path: 'sender', select: 'name avatar' })
     .populate({ path: 'attachments', select: ATTACHMENT_POPULATE_FIELDS })
-    .populate({ path: 'replyTo', select: 'sender content type createdAt isDeleted' });
+    .populate(REPLY_TO_POPULATE);
 
   const hasNext = docs.length > safeLimit;
   const messages = hasNext ? docs.slice(0, safeLimit) : docs;
@@ -264,7 +313,8 @@ export const editMessage = async (messageId, userId, newContent, files = [], vid
     // Nothing actually changed — return as-is instead of bumping isEdited.
     return Message.findById(message._id)
       .populate({ path: 'sender', select: 'name avatar' })
-      .populate({ path: 'attachments', select: ATTACHMENT_POPULATE_FIELDS });
+      .populate({ path: 'attachments', select: ATTACHMENT_POPULATE_FIELDS })
+      .populate(REPLY_TO_POPULATE);
   }
 
   // Upload/verify replacements *before* touching the message, so a failure
@@ -334,7 +384,8 @@ export const editMessage = async (messageId, userId, newContent, files = [], vid
 
   return Message.findById(message._id)
     .populate({ path: 'sender', select: 'name avatar' })
-    .populate({ path: 'attachments', select: ATTACHMENT_POPULATE_FIELDS });
+    .populate({ path: 'attachments', select: ATTACHMENT_POPULATE_FIELDS })
+    .populate(REPLY_TO_POPULATE);
 };
 
 /**
@@ -375,7 +426,8 @@ export const deleteMessage = async (messageId, userId, deleteFor) => {
 
   return Message.findById(message._id)
     .populate({ path: 'sender', select: 'name avatar' })
-    .populate({ path: 'attachments', select: ATTACHMENT_POPULATE_FIELDS });
+    .populate({ path: 'attachments', select: ATTACHMENT_POPULATE_FIELDS })
+    .populate(REPLY_TO_POPULATE);
 };
 
 /**
@@ -416,7 +468,8 @@ export const addReaction = async (messageId, userId, emoji) => {
 
   return Message.findById(message._id)
     .populate({ path: 'sender', select: 'name avatar' })
-    .populate({ path: 'attachments', select: ATTACHMENT_POPULATE_FIELDS });
+    .populate({ path: 'attachments', select: ATTACHMENT_POPULATE_FIELDS })
+    .populate(REPLY_TO_POPULATE);
 };
 
 /**
@@ -465,7 +518,7 @@ export const addAttachmentReaction = async (attachmentId, userId, emoji) => {
   return Message.findById(message._id)
     .populate({ path: 'sender', select: 'name avatar' })
     .populate({ path: 'attachments', select: ATTACHMENT_POPULATE_FIELDS })
-    .populate({ path: 'replyTo', select: 'sender content type createdAt isDeleted' });
+    .populate(REPLY_TO_POPULATE);
 };
 
 /**

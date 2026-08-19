@@ -7,17 +7,25 @@ const getMessages = async (conversationId, { cursor, limit } = {}) => {
   return response.data.data;
 };
 
-const sendMessage = async (conversationId, content, { type = 'text', images = [], videoAttachments = [] } = {}) => {
+const sendMessage = async (
+  conversationId,
+  content,
+  { type = 'text', images = [], videoAttachments = [], replyTo = null } = {}
+) => {
   // Video bytes were already uploaded directly to Cloudinary (see
   // api/media.js) — videoAttachments here is just an array of tiny
   // {publicId} refs, small enough to always ride along as JSON even in a
-  // multipart request.
+  // multipart request. replyTo is just as small — a single message id — so
+  // it rides along the same way in both branches below.
   if (images.length > 0) {
     const formData = new FormData();
     formData.append('content', content || '');
     images.forEach((image) => formData.append('images', image));
     if (videoAttachments.length > 0) {
       formData.append('videoAttachments', JSON.stringify(videoAttachments));
+    }
+    if (replyTo) {
+      formData.append('replyTo', replyTo);
     }
 
     // apiClient sets a default 'Content-Type: application/json' header. If we
@@ -40,6 +48,7 @@ const sendMessage = async (conversationId, content, { type = 'text', images = []
     content,
     type,
     videoAttachments,
+    replyTo,
   });
   return response.data.data;
 };

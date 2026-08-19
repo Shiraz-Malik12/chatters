@@ -50,10 +50,10 @@ const parseVideoAttachments = (raw) => {
  * @returns {Promise<void>}
  */
 export const createMessage = asyncHandler(async (req, res) => {
-  const { content = '', type = 'text' } = req.body;
+  const { content = '', type = 'text', replyTo = null } = req.body;
   const files = req.files || [];
   const videoRefs = parseVideoAttachments(req.body.videoAttachments);
-  const message = await sendMessage(req.params.id, String(req.user.id), content, type, files, videoRefs);
+  const message = await sendMessage(req.params.id, String(req.user.id), content, type, files, videoRefs, replyTo || null);
 
   const io = req.app.get('io');
   if (io) {
